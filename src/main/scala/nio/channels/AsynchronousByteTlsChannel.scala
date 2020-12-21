@@ -15,6 +15,7 @@ import zio.ZEnv
 
 import zio.{ Chunk, IO, ZIO }
 
+
 import nio.SSLEngine
 
 sealed class TLSChannelError(msg: String) extends Exception(msg)
@@ -43,6 +44,7 @@ object AsynchronousTlsByteChannel {
 
     val result = for {
       sequential_unwrap_flag <- zio.Ref.make(false)
+      _      <- IO( println( "FALG*= " + sequential_unwrap_flag.get ))
       in_buf                 <- Buffer.byte(BUFF_SZ)
       out_buf                <- Buffer.byte(BUFF_SZ)
       empty                  <- Buffer.byte(0)
@@ -52,10 +54,18 @@ object AsynchronousTlsByteChannel {
         _ match {
           case NEED_WRAP =>
             for {
+
+                 pos_ <- in_buf.position
+                 lim_ <- in_buf.limit
+                   _    <- IO( println( "WRAP while in buffer has data   " + pos_ + " " + lim_ ))
+
+              _      <- IO( println( "*********FALG=" ) )
               _               <- out_buf.clear
               result          <- ssl_engine.wrap(empty, out_buf)
               _               <- out_buf.flip
-              _               <- sequential_unwrap_flag.set(false)
+
+              _               <- if ( pos_ > 0 && pos_ < lim_ ) IO.unit
+                                 else sequential_unwrap_flag.set(false)
               handshakeStatus <- raw_ch.writeBuffer(out_buf) *> IO.effect(result.getHandshakeStatus)
             } yield (handshakeStatus)
 
@@ -64,12 +74,31 @@ object AsynchronousTlsByteChannel {
               _sequential_unwrap_flag =>
                 if (_sequential_unwrap_flag == false)
                   for {
+                    _      <- IO( println( "FALG= " + _sequential_unwrap_flag) )
                     _      <- in_buf.clear
                     _      <- out_buf.clear
-                    _      <- raw_ch.readBuffer(in_buf)
+
+                    pos_ <- in_buf.position
+                    lim_ <- in_buf.limit
+
+                    _    <- IO( println( "READ while buffer has data   " + pos_ + " " + lim_ ))
+
+                     _    <- IO( println( "before read") )
+                    n     <- raw_ch.readBuffer(in_buf)
+                     _    <- IO( println( "after read " + n ) )
+
+                     _    <- if ( n == -1 ) ZIO.fail( new TLSChannelError( "AsynchronousTlsByteChannel: no data to unwrap") )
+                          else ZIO.unit
+
+                    pos2 <- in_buf.position
+                    lim2 <- in_buf.limit
+
+                    _    <- IO( println( ">>>>> " + pos2 + " " + lim2 ))
+
                     _      <- in_buf.flip
                     _      <- sequential_unwrap_flag.set(true)
                     result <- ssl_engine.unwrap(in_buf, out_buf)
+                    _      <- IO( println( "initial - " + result.toString() ))
                   } yield (result.getHandshakeStatus())
                 else
                   for {
@@ -78,42 +107,64 @@ object AsynchronousTlsByteChannel {
                     pos <- in_buf.position
                     lim <- in_buf.limit
 
-                    hStat <- if (pos == lim) {
-                              IO(println("1" + pos + "  " + lim)) *> sequential_unwrap_flag.set(false) *> IO
-                                .succeed(NEED_UNWRAP)
-                            } else {
+                    hStat <- if (pos == lim)
+                    {   
+                        IO( println( "1" + pos + "  " + lim) )  *>  sequential_unwrap_flag.set( false ) *> IO.succeed(NEED_UNWRAP)
+                    }          
+                            else {
                               for {
+                                _ <- IO( println( "  else before" ) )
+
+                                 pos2 <- in_buf.position
+                                 lim2 <- in_buf.limit
+
                                 r <- ssl_engine.unwrap(in_buf, out_buf)
-                                _ <- if (r.getStatus() == javax.net.ssl.SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                                      for {
 
-                                        p1 <- in_buf.position
-                                        l1 <- in_buf.limit
+                                pos3 <- in_buf.position
+                                 lim3 <- in_buf.limit
 
-                                        //underflow read() append to the end, till BUF_SZ
-                                        _ <- in_buf.position(l1)
-                                        _ <- in_buf.limit(BUFF_SZ)
 
-                                        _ <- raw_ch.readBuffer(in_buf)
+                                _ <- IO( println( "  else " + r.toString() + pos2  + "/" + lim2 + ">" + pos3 + "/" + lim3  ) )
+                                _ <- if ( r.getStatus() == javax.net.ssl.SSLEngineResult.Status.BUFFER_UNDERFLOW )
+                                  {
+                                    for {
+                                    
+                                       p22 <- in_buf.position
+                                       l22 <-  in_buf.limit
 
-                                        p2 <- in_buf.position //new limit
-                                        _  <- in_buf.limit(p2)
-                                        _  <- in_buf.position(p1) //back to original position, we had before read
+                                      _ <- in_buf.position( l22 )
+                                      _ <- in_buf.limit( BUFF_SZ )
 
-                                        r <- ssl_engine
-                                              .unwrap(in_buf, out_buf) //.map( r => { println( "SECOND " + r.toString); r })
+                                      _ <- raw_ch.readBuffer(in_buf)
 
-                                      } yield (r)
+                                      p <-  in_buf.position
+                                      l <-  in_buf.limit
+                               
+                                       p_c <- in_buf.position
+                                      _ <- in_buf.limit( p_c )
+                                      _ <- in_buf.position( p22 ) 
 
-                                    } else IO(r)
+                                      p2 <-  in_buf.position
+                                      l2 <-  in_buf.limit
+                                     //_ <- IO( println(  "read-flip " + p2 + "  "  + l2 ) )
 
-                              } yield (r.getHandshakeStatus)
-                            }
+                                      r <- ssl_engine.unwrap(in_buf, out_buf).map( r => { println( "SECOND " + r.toString); r })
+
+                                      //_ <- zio.blocking.effectBlocking( Thread.sleep( 10000 ) )
+
+                                    } yield( r )
+                                   
+                                  } else IO( r )
+
+                              } yield( r.getHandshakeStatus  )
+
+                              //ssl_engine.unwrap(in_buf, out_buf).map(_.getHandshakeStatus())
+                            }   
                   } yield (hStat)
             )
           }
 
-          case NEED_TASK => ssl_engine.getDelegatedTask() *> IO.succeed(NEED_TASK)
+          case NEED_TASK => IO( println( "before" )) *> ssl_engine.getDelegatedTask() *> IO( println( "after" )) *> IO.succeed(NEED_TASK)
 
           case NOT_HANDSHAKING => IO.succeed(NOT_HANDSHAKING)
 
@@ -126,8 +177,8 @@ object AsynchronousTlsByteChannel {
       }
 
       _ <- loop
-            .repeat(zio.Schedule.recurWhile(c => { /*println(c.toString);*/ c != FINISHED }))
-            .refineToOrDie[Exception]
+            .repeat(zio.Schedule.recurWhile(c => { println( c.toString ); c != FINISHED }))
+            .refineToOrDie[Exception]  //.catchAll(  e => IO ( e.printStackTrace()) )
 
     } yield ()
 
@@ -154,13 +205,15 @@ class AsynchronousTlsByteChannel(private val channel: AsynchronousSocketChannel,
 
   def remoteAddress: ZIO[ZEnv, Exception, Option[SocketAddress]] = channel.remoteAddress
 
-  def readBuffer(out_b: java.nio.ByteBuffer): ZIO[ZEnv, Exception, Unit] = {
 
-    val out = Buffer.byte(out_b)
+  def readBuffer( out_b : java.nio.ByteBuffer ) : ZIO[ZEnv, Exception, Unit] = 
+  {
 
-    val result = for {
+     val out = Buffer.byte( out_b )
 
-      in <- IO.effectTotal(new nio.ByteBuffer(IN_J_BUFFER)) //reuse carryover buffer from previous read(), buffer was compacted with compact(), only non-processed data left
+     val result = for {
+
+      in  <- IO.effectTotal(new nio.ByteBuffer(IN_J_BUFFER)) //reuse carryover buffer from previous read(), buffer was compacted with compact(), only non-processed data left
 
       nb <- channel.readBuffer(in, Duration(READ_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS))
 
@@ -184,7 +237,7 @@ class AsynchronousTlsByteChannel(private val channel: AsynchronousSocketChannel,
       //****compact, some data may be carried over for next read call
       _ <- in.compact
 
-    } yield (out)
+    } yield ( out )
 
     result.unit.refineToOrDie[Exception]
 
@@ -199,7 +252,7 @@ class AsynchronousTlsByteChannel(private val channel: AsynchronousSocketChannel,
       in  <- IO.effectTotal(new nio.ByteBuffer(IN_J_BUFFER)) //reuse carryover buffer from previous read(), buffer was compacted with compact(), only non-processed data left
 
       //_   <- zio.console.putStrLn( "before read " + expected_size + " " + OUT_BUF_SZ )
-
+   
       nb <- channel.readBuffer(in, Duration(READ_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS))
 
       _ <- if (nb == -1) IO.fail(new TLSChannelError("AsynchronousServerTlsByteChannel#read() with -1 "))
@@ -339,9 +392,6 @@ object AsynchronousServerTlsByteChannel {
                     _      <- in_buf.flip
                     _      <- sequential_unwrap_flag.set(true)
                     result <- ssl_engine.unwrap(in_buf, out_buf)
-                    _ <- if (result.getStatus() == javax.net.ssl.SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                          IO(println("underflow 1"))
-                        } else IO.unit
                   } yield (result.getHandshakeStatus())
                 else
                   for {
@@ -352,15 +402,8 @@ object AsynchronousServerTlsByteChannel {
 
                     hStat <- if (pos == lim)
                               sequential_unwrap_flag.set(false) *> IO.succeed(NEED_UNWRAP)
-                            else {
-                              for {
-                                result <- ssl_engine.unwrap(in_buf, out_buf)
-                                _      <- if (result.getStatus() == javax.net.ssl.SSLEngineResult.Status.BUFFER_UNDERFLOW) {
-                                               IO(println("underflow 2"))
-                                             } else IO.unit
-
-                              } yield (result.getHandshakeStatus())
-                            }
+                            else
+                              ssl_engine.unwrap(in_buf, out_buf).map(_.getHandshakeStatus())
                   } yield (hStat)
             )
           }

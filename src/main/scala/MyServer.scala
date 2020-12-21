@@ -148,7 +148,14 @@ object myServer extends zio.App {
        for {
 
               //con <- HttpConnection.connect( "https://tools.ietf.org:443", null, "")
-              con <- HttpConnection.connect( "https://tomcat.apache.org:443", null, "")
+              //con <- HttpConnection.connect( "https://tomcat.apache.org:443", null, "")
+
+             // con <- HttpConnection.connect( "https://yahoo.com:443", null, "")
+
+             //con <- HttpConnection.connect( "https://cnn.com:443", null, "")
+
+             con <- HttpConnection.connect( "https://expedia.com:443", null, "")
+              
               //con <- ResPoolGroup.acquire[HttpConnection]( "pool1")
 
               _ <- zio.console.putStrLn( "POOL")
