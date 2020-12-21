@@ -339,6 +339,9 @@ object AsynchronousServerTlsByteChannel {
                     _      <- in_buf.flip
                     _      <- sequential_unwrap_flag.set(true)
                     result <- ssl_engine.unwrap(in_buf, out_buf)
+                    _ <- if (result.getStatus() == javax.net.ssl.SSLEngineResult.Status.BUFFER_UNDERFLOW) {
+                          IO(println("underflow 1"))
+                        } else IO.unit
                   } yield (result.getHandshakeStatus())
                 else
                   for {
@@ -349,8 +352,15 @@ object AsynchronousServerTlsByteChannel {
 
                     hStat <- if (pos == lim)
                               sequential_unwrap_flag.set(false) *> IO.succeed(NEED_UNWRAP)
-                            else
-                              ssl_engine.unwrap(in_buf, out_buf).map(_.getHandshakeStatus())
+                            else {
+                              for {
+                                result <- ssl_engine.unwrap(in_buf, out_buf)
+                                _      <- if (result.getStatus() == javax.net.ssl.SSLEngineResult.Status.BUFFER_UNDERFLOW) {
+                                               IO(println("underflow 2"))
+                                             } else IO.unit
+
+                              } yield (result.getHandshakeStatus())
+                            }
                   } yield (hStat)
             )
           }

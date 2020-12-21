@@ -16,6 +16,12 @@ import zio.Chunk
 
 object param1 extends QueryParam("param1")
 
+import zhttp.clients._
+import zhttp.clients.ResPoolGroup.RPDM
+import zhttp.clients.ResPoolGroup.ResPoolGroup
+import zhttp.MyLogging.MyLogging
+
+
 
 object DataBlock {
 
@@ -136,7 +142,28 @@ object myServer extends zio.App {
       }
     }
 
-    val app_route_JSON = HttpRoutes.ofWithFilter(proc1) { 
+    val app_route_JSON = HttpRoutes.of { 
+
+      case GET -> Root / "pool" =>
+       for {
+
+              //con <- HttpConnection.connect( "https://tools.ietf.org:443", null, "")
+              con <- HttpConnection.connect( "https://tomcat.apache.org:443", null, "")
+              //con <- ResPoolGroup.acquire[HttpConnection]( "pool1")
+
+              _ <- zio.console.putStrLn( "POOL")
+ 
+              //response <- con.send( clients.ClientRequest( GET, "/test"  ).hdr( "MyHeader" -> "Happy Holidays!") )
+
+              response <- con.send( clients.ClientRequest( GET, "/about"  ) )
+
+              _  <- con.close
+
+              str <- ZIO( new String( "CODE " + response.code + "\n" + response.hdrs.printHeaders + "\n" + 
+                                         response.asText + " " + "keep = " + response.isKeepAlive ) )
+              
+
+       } yield( Response.Ok.asTextBody( str ) ) 
 
        case GET -> Root / "test2" =>
          ZIO(Response.Ok.asTextBody( "Health Check" ) )
@@ -212,8 +239,17 @@ object myServer extends zio.App {
     myHttp.KEEP_ALIVE = 2000             //ms, good if short for testing with broken site's snaphosts with 404 pages
     myHttp.SERVER_PORT = 8084
 
+
+    ResPool.TIME_TO_LIVE = 0
+    val http_client_pool_L   = ResPoolGroup.makeM[HttpConnection]( 
+        RPDM( 
+              () => HttpConnection.connect( "https://yahoo.com:443", null, "" ),
+              _.close,
+             "pool1" )  )
+
     myHttp
       .run(myHttpRouter.route)
+      .provideSomeLayer[ZEnv with MyLogging]( http_client_pool_L )
       .provideSomeLayer[ZEnv](MyLogging.make(("console" -> LogLevel.Trace), ("access" -> LogLevel.Info )))
       .exitCode
   }
